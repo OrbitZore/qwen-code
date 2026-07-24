@@ -81,9 +81,10 @@ The adapter detects mentions by scanning the **comment body** for `@bot-username
 The adapter uses GitHub's Notifications API as a wake-up signal:
 
 1. **Poll** `GET /notifications` for unread threads
-2. **Mark read** via `markNotificationsAsRead` (best-effort cleanup)
+2. **Mark read** via `markNotificationsAsRead` (best-effort cleanup, before processing)
 3. **Enumerate** comments via `listComments` within a cursor-based time window
 4. **Process** each new comment (mention detection, envelope building)
+5. **First-contact**: if no mention was dispatched and the thread is brand-new (no `last_read_at`), the issue/PR body is fetched and processed if it contains @bot
 
 The comment window is `(previousCursor, currentMaxUpdatedAt]` — comments already eligible in a previous poll cycle are excluded by the cursor, preventing duplicate replies even when the async mark-read has not taken effect. If the process crashes mid-processing, the user can re-mention the bot to retry.
 

@@ -64,16 +64,18 @@ Because the cursor is global (not per-thread), a notification that arrives in a 
 `PollingChannelBase<Cursor>` (in `packages/channels/base/`) extends `ChannelBase` and provides the poll loop infrastructure:
 
 - **Poll loop**: start/stop via `startPollLoop()`/`stopPollLoop()`, called from `connect()`/`disconnect()`
-- **Poll interval**: read from channel config `pollInterval` (ms), defaults to 60000
-- **Cursor persistence**: JSON cursor saved atomically after each successful `pollOnce()`; loaded on construction (corrupt → fallback to `createInitialCursor()`)
+- **Poll interval**: read from channel config `pollInterval` (ms), validated as positive finite number, defaults to 60000
+- **Cursor persistence**: JSON cursor saved atomically after each successful `pollOnce()`; loaded on construction (corrupt or unparseable date → fallback to `createInitialCursor()`)
+- **Cursor validation**: `validateCursor()` virtual hook — base rejects non-objects and arrays; subclasses add shape checks (e.g. GitHub rejects missing/invalid `lastProcessedAt` date)
 - **Backoff**: exponential 2s → 30s on poll errors, reset on success
+- **Abortable sleep**: `abortableSleep(ms)` exposed as a protected method — poll interval and error backoff are interruptible via `disconnect()`
 
 Subclasses implement only:
 
 - `pollOnce()` — do the work, mutate `this.cursor`
 - `createInitialCursor()` — first-run default value
 
-The `Cursor` generic is any JSON-serializable object. GitHub uses `{ lastProcessedAt: string }`.
+The `Cursor` generic is any JSON-serializable object. GitHub uses `{ lastProcessedAt: string; dispatchedBodies?: string[] }` (the latter bounds first-contact body dedup to the most recent 500 entries).
 
 ## Mention Detection
 
@@ -88,6 +90,8 @@ Polling adapters use `chat_thread` scope: routing key = `channel:chatId:threadId
 
 ## Error Handling
 
-Delivery is **best-effort**. On `handleInbound` failure, an error comment is posted on the thread; the user re-mentions to retry. If the process crashes mid-processing, the cursor is not saved (it is persisted only after `pollOnce()` completes), so the next startup re-fetches the same notifications — but the cursor-based comment window excludes already-processed comments, preventing duplicates.
+Delivery is **best-effort**. On `handleInbound` failure, one error comment is posted per thread per poll cycle (then `break` exits the comment loop — prevents N identical error comments); the user re-mentions to retry. Per-notification API errors use `continue` — one failed notification does not block the rest of the batch. Notifications without a `subject.url` (Discussion, SecurityAlert types) are skipped silently.
+
+If the process crashes mid-processing, the cursor is not saved (it is persisted only after `pollOnce()` completes), so the next startup re-fetches the same notifications — but the cursor-based comment window excludes already-processed comments, preventing duplicates.
 
 Duplicate prevention does **not** depend on `PUT /notifications` succeeding. The global mark is best-effort cleanup; the cursor window is the load-bearing dedup mechanism.
