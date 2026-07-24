@@ -78,6 +78,7 @@ export abstract class PollingChannelBase<Cursor> extends ChannelBase {
   protected startPollLoop(): void {
     if (this.running) return;
     this.running = true;
+    this.consecutiveErrors = 0;
     this.abortController = new AbortController();
     this.runLoop();
   }

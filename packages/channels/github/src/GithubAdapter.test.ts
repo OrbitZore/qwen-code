@@ -460,6 +460,24 @@ describe('GithubChannel', () => {
         expect.objectContaining({ since: '2026-06-30T23:59:59.000Z' }),
       );
     });
+
+    it('excludes comments at or below the cursor window lower bound', async () => {
+      await initWithoutLoop();
+      // cursor is 2026-07-01T00:00:00.000Z → windowSince = same
+      mockOctokit.paginate
+        .mockResolvedValueOnce([
+          makeNotification({ updated_at: '2026-07-02T10:00:00.000Z' }),
+        ])
+        .mockResolvedValueOnce([
+          makeComment({ id: 1, updated_at: '2026-07-01T00:00:00.000Z' }),
+          makeComment({ id: 2, updated_at: '2026-07-02T09:00:00.000Z' }),
+        ]);
+
+      await pollOnce();
+
+      expect(channel.inboundEnvelopes).toHaveLength(1);
+      expect(channel.inboundEnvelopes[0]!.messageId).toBe('2');
+    });
   });
 
   describe('first contact (new issue body)', () => {

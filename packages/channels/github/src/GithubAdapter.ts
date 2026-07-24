@@ -323,6 +323,7 @@ export class GithubChannel extends PollingChannelBase<GithubCursor> {
           `[Channel:${this.name}] handleInbound failed for issue body ${issueNumber}: ${err}\n`,
         );
         await this.postErrorComment(chatId, issueNumber);
+        this.recordDispatchedBody(bodyKey);
       }
     } catch (err) {
       process.stderr.write(
@@ -398,7 +399,7 @@ export class GithubChannel extends PollingChannelBase<GithubCursor> {
         process.stderr.write(
           `[Channel:${this.name}] ${label} failed (attempt ${attempt}/${retries}, status=${e.status}), retrying in ${cooldown}ms: ${e.message}\n`,
         );
-        await new Promise((r) => setTimeout(r, cooldown));
+        await this.abortableSleep(cooldown);
       }
     }
     throw new Error('unreachable');
