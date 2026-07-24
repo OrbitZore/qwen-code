@@ -57,14 +57,14 @@ For GitHub Enterprise Server, set `baseUrl`:
 
 ## Configuration Options
 
-| Option           | Default                  | Description                                |
-| ---------------- | ------------------------ | ------------------------------------------ |
-| `token`          | (required)               | Classic PAT with `notifications` scope     |
-| `pollInterval`   | `60000`                  | Poll interval in ms                        |
-| `baseUrl`        | `https://api.github.com` | API base URL (for GHE)                     |
-| `requireMention` | `true`                   | Only respond when @mentioned               |
-| `groupPolicy`    | `"disabled"`             | Must be `"open"` for notifications to flow |
-| `senderPolicy`   | `"allowlist"`            | Who can trigger the bot                    |
+| Option                    | Default                  | Description                                          |
+| ------------------------- | ------------------------ | ---------------------------------------------------- |
+| `token`                   | (required)               | Classic PAT with `notifications` scope               |
+| `pollInterval`            | `60000`                  | Poll interval in ms                                  |
+| `baseUrl`                 | `https://api.github.com` | API base URL (for GHE)                               |
+| `groupPolicy`             | `"disabled"`             | Must be `"open"` for notifications to flow           |
+| `senderPolicy`            | `"allowlist"`            | Who can trigger the bot                              |
+| `groups.*.requireMention` | `true`                   | Only respond when @mentioned (nested under `groups`) |
 
 ## ⚠️ Security
 

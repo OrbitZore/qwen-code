@@ -5161,6 +5161,7 @@ export abstract class ChannelBase {
             // Clear attachments/references — already resolved in original text
             referencedText: undefined,
             attachments: undefined,
+            metadata: undefined,
             imageBase64: undefined,
             imageMimeType: undefined,
           };

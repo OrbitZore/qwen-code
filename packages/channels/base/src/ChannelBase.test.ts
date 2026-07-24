@@ -7696,6 +7696,26 @@ describe('ChannelBase', () => {
       expect(ch.sent[0]!.text).toContain('Session cleared');
     });
 
+    it('/clear in a chat_thread group asks for confirmation (shared session)', async () => {
+      const ch = createChannel({
+        sessionScope: 'chat_thread',
+        groupPolicy: 'open',
+      });
+      const g = envelope({
+        isGroup: true,
+        isMentioned: true,
+        chatId: 'owner/repo',
+        threadId: 'issue:42',
+      });
+      await ch.handleInbound({ ...g, text: 'hello' });
+      ch.sent = [];
+      await ch.handleInbound({ ...g, text: '/clear' });
+      expect(ch.sent[0]!.text).toContain('/clear confirm');
+      ch.sent = [];
+      await ch.handleInbound({ ...g, text: '/clear confirm' });
+      expect(ch.sent[0]!.text).toContain('Session cleared');
+    });
+
     it('/clear in a shared group is restricted to authorized senders', async () => {
       const ch = createChannel({
         sessionScope: 'thread',

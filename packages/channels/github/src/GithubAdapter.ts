@@ -50,6 +50,7 @@ export class GithubChannel extends PollingChannelBase<GithubCursor> {
   protected override validateCursor(parsed: unknown): GithubCursor | null {
     const base = super.validateCursor(parsed);
     if (!base || typeof base.lastProcessedAt !== 'string') return null;
+    if (Number.isNaN(new Date(base.lastProcessedAt).getTime())) return null;
     if (base.dispatchedBodies && !Array.isArray(base.dispatchedBodies)) {
       base.dispatchedBodies = [];
     }
@@ -169,6 +170,7 @@ export class GithubChannel extends PollingChannelBase<GithubCursor> {
     }
 
     for (const notification of notifications) {
+      if (!notification.subject.url) continue;
       const extracted = this.extractFromSubjectUrl(notification.subject.url);
       if (!extracted) {
         continue;

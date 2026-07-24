@@ -270,7 +270,9 @@ describe('GithubChannel', () => {
     it('skips bot own comments', async () => {
       await initWithoutLoop();
       mockOctokit.paginate
-        .mockResolvedValueOnce([makeNotification()])
+        .mockResolvedValueOnce([
+          makeNotification({ last_read_at: '2026-07-01T12:00:00.000Z' }),
+        ])
         .mockResolvedValueOnce([
           makeComment({
             user: { id: 99999, login: 'test-bot' },
@@ -284,7 +286,9 @@ describe('GithubChannel', () => {
     it('dispatches non-mention comments with isMentioned false', async () => {
       await initWithoutLoop();
       mockOctokit.paginate
-        .mockResolvedValueOnce([makeNotification()])
+        .mockResolvedValueOnce([
+          makeNotification({ last_read_at: '2026-07-01T12:00:00.000Z' }),
+        ])
         .mockResolvedValueOnce([
           makeComment({ body: 'just a regular comment' }),
         ]);
@@ -296,7 +300,9 @@ describe('GithubChannel', () => {
     it('does not false-positive on trailing newline', async () => {
       await initWithoutLoop();
       mockOctokit.paginate
-        .mockResolvedValueOnce([makeNotification()])
+        .mockResolvedValueOnce([
+          makeNotification({ last_read_at: '2026-07-01T12:00:00.000Z' }),
+        ])
         .mockResolvedValueOnce([makeComment({ body: 'Please fix.\n' })]);
       await pollOnce();
       expect(channel.inboundEnvelopes).toHaveLength(1);
@@ -447,9 +453,11 @@ describe('GithubChannel', () => {
         .mockResolvedValueOnce([makeComment()]);
       await pollOnce();
 
-      expect(mockOctokit.paginate).toHaveBeenCalledWith(
+      // The loop's initial poll is call #1; the test's direct pollOnce is #2
+      expect(mockOctokit.paginate).toHaveBeenNthCalledWith(
+        2,
         expect.anything(),
-        expect.objectContaining({ since: '2026-07-01T00:00:00.000Z' }),
+        expect.objectContaining({ since: '2026-06-30T23:59:59.000Z' }),
       );
     });
   });
@@ -577,6 +585,43 @@ describe('GithubChannel', () => {
       await pollOnce();
 
       expect(channel.inboundEnvelopes).toHaveLength(1);
+    });
+
+    it('evicts oldest dispatchedBodies entries beyond the limit', async () => {
+      await initWithoutLoop();
+      // Pre-fill cursor with 500 entries (the max)
+      channel.cursor.dispatchedBodies = Array.from(
+        { length: 500 },
+        (_, i) => `owner/repo|issue:${i}`,
+      );
+      mockOctokit.rest.issues.get.mockResolvedValue({
+        data: {
+          body: '@test-bot new issue',
+          created_at: '2026-07-02T08:00:00.000Z',
+          user: { id: 10002, login: 'bob' },
+        },
+      });
+      mockOctokit.paginate
+        .mockResolvedValueOnce([
+          makeNotification({
+            last_read_at: null,
+            subject: {
+              title: 'New Issue',
+              url: 'https://api.github.com/repos/owner/repo/issues/999',
+              type: 'Issue',
+            },
+          }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      await pollOnce();
+
+      expect(channel.cursor.dispatchedBodies).toHaveLength(500);
+      // Oldest entry evicted, newest retained
+      expect(channel.cursor.dispatchedBodies).not.toContain(
+        'owner/repo|issue:0',
+      );
+      expect(channel.cursor.dispatchedBodies).toContain('owner/repo|issue:999');
     });
   });
 

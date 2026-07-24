@@ -8,24 +8,6 @@ import { ChannelBase } from './ChannelBase.js';
 import type { ChannelConfig } from './types.js';
 import { getGlobalQwenDir } from './paths.js';
 
-function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 const INITIAL_BACKOFF = 2_000;
 const MAX_BACKOFF = 30_000;
 
@@ -34,6 +16,25 @@ export abstract class PollingChannelBase<Cursor> extends ChannelBase {
   private abortController = new AbortController();
   private running = false;
   private consecutiveErrors = 0;
+
+  protected abortableSleep(ms: number): Promise<void> {
+    const signal = this.abortController.signal;
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
 
   constructor(
     name: string,
@@ -102,10 +103,10 @@ export abstract class PollingChannelBase<Cursor> extends ChannelBase {
         process.stderr.write(
           `[Channel:${this.name}] poll error (attempt ${this.consecutiveErrors}), backing off ${backoff}ms: ${err}\n`,
         );
-        await abortableSleep(backoff, signal);
+        await this.abortableSleep(backoff);
         continue;
       }
-      await abortableSleep(this.pollInterval, signal);
+      await this.abortableSleep(this.pollInterval);
     }
   }
 
