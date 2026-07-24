@@ -10,39 +10,43 @@ The core insight: platform notifications are **thread-level** and **mutable** �
 
 Instead, notifications serve only as a **wake-up signal** ("something happened on this thread"). The adapter then enumerates actual comments via the platform's comments API, using a per-thread watermark to determine which comments are new.
 
-## GitHub: `last_read_at` Watermark
+## GitHub: Cursor-Based Comment Window
 
-GitHub provides a server-side per-thread read marker:
+GitHub provides a server-side per-thread read marker (`last_read_at`), but it cannot be relied upon for dedup:
 
-- `GET /notifications` returns only `unread=true` threads (default)
-- `last_read_at` is set by `markThreadAsRead` to the current time
-- Non-comment activity bumps `updated_at` but does NOT change `last_read_at`
+- `PUT /notifications` (global mark) returns **202 Accepted** and runs asynchronously
+- The mark uses `last_read_at` as a cutoff: notifications with `updated_at > last_read_at` are **not** marked
+- The bot's reply bumps the notification's `updated_at` past the cutoff before the async process runs → the mark never takes effect
+- The next poll re-fetches the still-unread notification → duplicate processing
+
+Therefore, correctness comes from a **cursor-based comment window**, not from the notification's read status:
 
 Poll cycle:
 
 1. `GET /notifications?since={cursor-1s}` — discover unread threads
-2. `markNotificationsAsRead(maxUpdatedAt)` — mark all fetched threads as read
-3. Advance global cursor to `max(updated_at)`
-4. Per thread: `listComments(since=last_read_at)` — enumerate new comments
-5. Filter: bot's own comments
-6. Process: mention detection → envelope → `handleInbound`
+2. Save `windowSince = cursor.lastProcessedAt` (the cursor **before** this poll advances it)
+3. `markNotificationsAsRead(maxUpdatedAt)` — best-effort global mark (cleans up non-issue notifications)
+4. Advance global cursor to `max(updated_at)`
+5. Per thread: `listComments(since=windowSince)` — enumerate comments
+6. Filter: bot's own comments, `updated_at > maxUpdatedAt` (upper bound), `updated_at <= windowSince` (lower bound, exclusive)
+7. Process: mention detection → envelope → `handleInbound`
 
-Marking as read happens **before** processing (best-effort delivery). This is safe because the bot's own replies do not flip notifications back to unread — GitHub only sets `unread=true` for notifications triggered by other users' activity. If the process crashes between steps 2 and 6, the affected comments are lost; the user re-mentions to retry.
+The effective comment window is `(windowSince, maxUpdatedAt]`. Comments processed in a previous poll have `updated_at <= windowSince` (the previous poll's `maxUpdatedAt`) and are excluded. This prevents duplicates regardless of whether `PUT /notifications` succeeded.
 
-Correctness comes from `unread` filtering + `last_read_at` watermark. The global cursor is a performance optimization only (server-side `since` filtering).
+The global mark is still called (step 3) to clean up non-issue/PR notifications and reduce the unread list, but it is not load-bearing for dedup.
 
 ### Scenario Behavior
 
-| Scenario                          | Behavior                                                                                  |
-| --------------------------------- | ----------------------------------------------------------------------------------------- |
-| New thread (@bot in comment)      | Appears (unread) → markRead → enumerate since cursor-1s → process                         |
-| Existing thread, new comment      | Reappears (unread) → markRead → enumerate since last_read_at → only new comments          |
-| Non-comment activity (push/label) | Appears → markRead → zero new comments → skip                                             |
-| User marks read on github.com     | Disappears from API → not processed                                                       |
-| markNotificationsAsRead fails     | Poll error → backoff → retry entire batch next poll                                       |
-| Crash after markRead, before done | Comments lost (best-effort) → user re-mentions to retry                                   |
-| Bot replies to a thread           | Notification `updated_at` bumped but stays `unread=false` → not re-fetched → no duplicate |
-| New issue with @bot in body       | No comments → body contains mention → feed body as trigger                                |
+| Scenario                          | Behavior                                                                                                                      |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| New thread (@bot in comment)      | Appears (unread) → enumerate since cursor → process                                                                           |
+| Existing thread, new comment      | Reappears (unread) → enumerate since cursor → old comments excluded by `<= windowSince` → only new                            |
+| Non-comment activity (push/label) | Appears → zero new comments in window → skip                                                                                  |
+| User marks read on github.com     | Disappears from API → not processed                                                                                           |
+| markNotificationsAsRead fails     | Cursor window still prevents duplicates → no impact on correctness                                                            |
+| Crash after markRead, before done | Comments lost (best-effort) → user re-mentions to retry                                                                       |
+| Bot replies to a thread           | `updated_at` bumped → notification may stay unread → next poll fetches it → comments excluded by cursor window → no duplicate |
+| New issue with @bot in body       | No comments → body contains mention → feed body as trigger (deduped via `dispatchedBodies`)                                   |
 
 ## PollingChannelBase
 
@@ -73,4 +77,6 @@ Polling adapters use `chat_thread` scope: routing key = `channel:chatId:threadId
 
 ## Error Handling
 
-Delivery is **best-effort**: notifications are marked as read before processing. On `handleInbound` failure, an error comment is posted on the thread. The user sees the error and can re-mention to retry. If the process crashes after marking read but before processing completes, the affected comments are lost — again, the user re-mentions to retry. This trades transient loss for duplicate prevention and infinite-loop safety, the correct tradeoff for an autonomous 24/7 agent.
+Delivery is **best-effort**. On `handleInbound` failure, an error comment is posted on the thread; the user re-mentions to retry. If the process crashes mid-processing, the cursor is not saved (it is persisted only after `pollOnce()` completes), so the next startup re-fetches the same notifications — but the cursor-based comment window excludes already-processed comments, preventing duplicates.
+
+Duplicate prevention does **not** depend on `PUT /notifications` succeeding. The global mark is best-effort cleanup; the cursor window is the load-bearing dedup mechanism.

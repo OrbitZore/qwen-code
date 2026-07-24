@@ -437,7 +437,7 @@ describe('GithubChannel', () => {
       expect(channel.inboundEnvelopes[0]!.messageId).toBe('1');
     });
 
-    it('uses last_read_at as enumeration window when available', async () => {
+    it('uses cursor as enumeration window lower bound', async () => {
       const notification = makeNotification({
         last_read_at: '2026-07-01T12:00:00.000Z',
       });
@@ -449,7 +449,7 @@ describe('GithubChannel', () => {
 
       expect(mockOctokit.paginate).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ since: '2026-07-01T12:00:00.000Z' }),
+        expect.objectContaining({ since: '2026-07-01T00:00:00.000Z' }),
       );
     });
   });
@@ -528,6 +528,55 @@ describe('GithubChannel', () => {
       expect(env.senderId).toBe('10003');
       expect(env.threadId).toBe('pr:99');
       expect(env.metadata).toContain('Pull Request');
+    });
+
+    it('feeds issue body whose notification arrived after the cursor passed created_at', async () => {
+      await initWithoutLoop();
+      // The cursor already advanced past the issue's created_at (another
+      // notification was processed first), but this thread was never read
+      // (last_read_at: null) — a late-arriving notification. It is still first
+      // contact and must be fed, not dropped as "already seen".
+      channel.cursor = { lastProcessedAt: '2026-07-02T09:00:00.000Z' };
+      mockOctokit.paginate
+        .mockResolvedValueOnce([makeNotification({ last_read_at: null })])
+        .mockResolvedValueOnce([]);
+
+      mockOctokit.rest.issues.get.mockResolvedValue({
+        data: {
+          body: '@test-bot late notification',
+          created_at: '2026-07-02T08:00:00.000Z',
+          user: { id: 10002, login: 'bob' },
+        },
+      });
+
+      await pollOnce();
+
+      expect(channel.inboundEnvelopes).toHaveLength(1);
+      expect(channel.inboundEnvelopes[0]!.text).toBe(' late notification');
+    });
+
+    it('does not feed the same issue body twice when the thread is re-fetched unread', async () => {
+      await initWithoutLoop();
+      mockOctokit.rest.issues.get.mockResolvedValue({
+        data: {
+          body: '@test-bot only once',
+          created_at: '2026-07-02T08:00:00.000Z',
+          user: { id: 10002, login: 'bob' },
+        },
+      });
+      // Two consecutive polls both see the thread unread with last_read_at
+      // null — simulating a mark-read that failed to mark this thread (its
+      // updated_at bumped past the cutoff). The body must be fed only once.
+      mockOctokit.paginate
+        .mockResolvedValueOnce([makeNotification({ last_read_at: null })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([makeNotification({ last_read_at: null })])
+        .mockResolvedValueOnce([]);
+
+      await pollOnce();
+      await pollOnce();
+
+      expect(channel.inboundEnvelopes).toHaveLength(1);
     });
   });
 
