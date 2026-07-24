@@ -12,21 +12,28 @@ Instead, notifications serve only as a **wake-up signal** ("something happened o
 
 ## GitHub: Cursor-Based Comment Window
 
-GitHub provides a server-side per-thread read marker (`last_read_at`), but it cannot be relied upon for dedup:
+### Notification/Comment Timestamp Decoupling
 
-- `PUT /notifications` (global mark) returns **202 Accepted** and runs asynchronously
-- The mark uses `last_read_at` as a cutoff: notifications with `updated_at > last_read_at` are **not** marked
-- The bot's reply bumps the notification's `updated_at` past the cutoff before the async process runs → the mark never takes effect
-- The next poll re-fetches the still-unread notification → duplicate processing
+A critical timing issue: **notification `updated_at` and comment `updated_at` are decoupled**.
 
-Therefore, correctness comes from a **cursor-based comment window**, not from the notification's read status:
+- `notification.updated_at` is bumped by _any_ thread activity (comment, push, label change) and is subject to delivery delay
+- `comment.updated_at` reflects when the comment was actually created/edited
+
+These timestamps have no causal relationship. A notification can arrive 16 seconds after the comment that triggered it, and can be bumped again by unrelated activity. Using notification timestamps to gate comment enumeration therefore produces two failure modes:
+
+1. **Duplicate replies** — `PUT /notifications` is async (202 Accepted) with a `last_read_at` cutoff. The bot's reply bumps `updated_at` past the cutoff before the server processes the mark, so the notification is never marked read. The next poll re-fetches it and re-processes the same comments.
+2. **Missed replies** — the cursor advances to `max(notification.updated_at)`, which can leap past comments on late-arriving notifications. When those notifications finally arrive, their comments fall below the cursor window and are silently excluded.
+
+### Design
+
+Correctness comes from a **cursor-based comment window**, not from the notification's read status:
 
 Poll cycle:
 
 1. `GET /notifications?since={cursor-1s}` — discover unread threads
 2. Save `windowSince = cursor.lastProcessedAt` (the cursor **before** this poll advances it)
 3. `markNotificationsAsRead(maxUpdatedAt)` — best-effort global mark (cleans up non-issue notifications)
-4. Advance global cursor to `max(updated_at)`
+4. Advance global cursor to `max(notification.updated_at)`
 5. Per thread: `listComments(since=windowSince)` — enumerate comments
 6. Filter: bot's own comments, `updated_at > maxUpdatedAt` (upper bound), `updated_at <= windowSince` (lower bound, exclusive)
 7. Process: mention detection → envelope → `handleInbound`
@@ -34,6 +41,10 @@ Poll cycle:
 The effective comment window is `(windowSince, maxUpdatedAt]`. Comments processed in a previous poll have `updated_at <= windowSince` (the previous poll's `maxUpdatedAt`) and are excluded. This prevents duplicates regardless of whether `PUT /notifications` succeeded.
 
 The global mark is still called (step 3) to clean up non-issue/PR notifications and reduce the unread list, but it is not load-bearing for dedup.
+
+### Known Limitation: Late Notification Delivery
+
+Because the cursor is global (not per-thread), a notification that arrives in a later poll than its comments' `updated_at` can have those comments excluded by the cursor window. This requires notification delivery to be delayed across a poll boundary AND another thread's comments to advance the cursor past them in the interim. In practice this window is narrow (notification delivery typically completes within one poll interval); the user can re-mention to retry.
 
 ### Scenario Behavior
 

@@ -241,6 +241,7 @@ export class GithubChannel extends PollingChannelBase<GithubCursor> {
               `[Channel:${this.name}] handleInbound failed for comment ${comment.id}: ${err}\n`,
             );
             await this.postErrorComment(chatId, issueNumber);
+            break;
           }
         }
 
@@ -276,11 +277,15 @@ export class GithubChannel extends PollingChannelBase<GithubCursor> {
     const bodyKey = `${chatId}|${threadId}`;
     if (this.cursor.dispatchedBodies?.includes(bodyKey)) return;
     try {
-      const { data: issue } = await this.octokit.rest.issues.get({
-        owner: chatId.split('/')[0],
-        repo: chatId.split('/')[1],
-        issue_number: issueNumber,
-      });
+      const { data: issue } = await this.githubApi(
+        () =>
+          this.octokit.rest.issues.get({
+            owner: chatId.split('/')[0],
+            repo: chatId.split('/')[1],
+            issue_number: issueNumber,
+          }),
+        `issues.get(${threadId})`,
+      );
 
       const body = issue.body || '';
 
